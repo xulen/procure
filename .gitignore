@@ -216,3 +216,15 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Salida del scraper (regenerable con src/main.py) — no versionar documentos
+# descargados, índices ni caché
+nachus/
+bids/
+biad/
+_index.json
+_summary.json
+_notices_seen.json
+_notices_cache.csv
+_report.html
+_report.xlsx

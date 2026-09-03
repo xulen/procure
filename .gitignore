@@ -222,9 +222,14 @@ __marimo__/
 nachus/
 bids/
 biad/
+nch/
+worldbank/
 _index.json
 _summary.json
 _notices_seen.json
 _notices_cache.csv
 _report.html
 _report.xlsx
+
+# Infraestructura local de Claude Code (locks de tareas programadas, etc.)
+.claude/

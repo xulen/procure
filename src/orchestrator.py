@@ -25,22 +25,40 @@ def _ensure_bid_imports():
     global _bids_imports_ready
     if not _bids_imports_ready:
         from bids_config import OUTPUT_ROOT as BIDS_OUTPUT_ROOT
-        from bids_notices import (
-            fetch_all_notices as bids_fetch_all_notices,
-            slugify_project as bids_slugify_project,
-        )
-        from bids_index import load_notices_seen as bids_load_notices_seen, save_notices_seen as bids_save_notices_seen  # noqa: E501
-        from bids_documents import download_document as bids_download_document
+        from bids_browser import BidBrowser
+        from bids_listings import fetch_all_listings as bids_fetch_all_listings
+        from bids_projects import fetch_project_documents as bids_fetch_project_documents
 
         globals().update({
             "_bids_output_root": BIDS_OUTPUT_ROOT,
-            "_bids_fetch_all_notices": bids_fetch_all_notices,
-            "_bids_slugify_project": bids_slugify_project,
-            "_bids_load_notices_seen": bids_load_notices_seen,
-            "_bids_save_notices_seen": bids_save_notices_seen,
-            "_bids_download_document": bids_download_document,
+            "_bids_browser_cls": BidBrowser,
+            "_bids_fetch_all_listings": bids_fetch_all_listings,
+            "_bids_fetch_project_documents": bids_fetch_project_documents,
         })
         _bids_imports_ready = True
+
+# Imports para World Bank (cargados perezosamente para no romper flujo CAF/BID)
+_wb_imports_ready = False
+
+
+def _ensure_worldbank_imports():
+    """Carga perezosamente los módulos del Banco Mundial solo cuando se necesitan."""
+    global _wb_imports_ready
+    if not _wb_imports_ready:
+        from worldbank_config import OUTPUT_ROOT as WB_OUTPUT_ROOT
+        from worldbank_projects import fetch_all_projects as wb_fetch_all_projects
+        from worldbank_documents import (
+            fetch_project_documents as wb_fetch_project_documents,
+            download_document as wb_download_document,
+        )
+
+        globals().update({
+            "_wb_output_root": WB_OUTPUT_ROOT,
+            "_wb_fetch_all_projects": wb_fetch_all_projects,
+            "_wb_fetch_project_documents": wb_fetch_project_documents,
+            "_wb_download_document": wb_download_document,
+        })
+        _wb_imports_ready = True
 
 logger = logging.getLogger(__name__)
 
@@ -296,20 +314,20 @@ def format_bytes(bytes_val):
 
 def run_bid_scraper(output_root=None, total_pages=None, delay_between_projects_ms=2000):
     """
-    Ejecuta el pipeline completo de descarga de avisos de adquisiciones del BID.
+    Ejecuta el pipeline completo de descarga de proyectos del BID.
 
-    A diferencia de CAF, esto NO scrapea HTML: www.iadb.org está bloqueado
-    por Cloudflare Bot Fight Mode (ver bids_config.py para el detalle de la
-    investigación). En su lugar descarga el dataset abierto de avisos de
-    adquisiciones que el BID publica en data.iadb.org y baja cada documento
-    desde idbdocs.iadb.org, que no tiene protección anti-bot.
+    Mismo patrón que CAF (listado → detalle → documentos → índice), pero
+    para pasar el bloqueo de Cloudflare de www.iadb.org, todo el fetching de
+    HTML se hace con un Chromium real lanzado a mano y controlado vía
+    CDP-attach (ver bids_browser.py) — ni requests ni Playwright.launch()
+    normal alcanzan. Las descargas de documentos sí van directo por
+    requests (document.cfm no está protegido, redirige a un bucket S3).
 
     Args:
         output_root: Directorio de salida (default: bids).
-        total_pages: Límite de avisos nuevos a procesar en esta corrida,
-                     priorizando los más recientes por fecha de publicación
-                     (default: 43, mismo default que CAF).
-        delay_between_projects_ms: Delay entre descargas en ms.
+        total_pages: Páginas de listado a recorrer, 10 proyectos c/u, orden
+                     más reciente primero (default: 43).
+        delay_between_projects_ms: Delay entre proyectos en ms.
 
     Returns:
         dict con resultados del scraping.
@@ -317,126 +335,125 @@ def run_bid_scraper(output_root=None, total_pages=None, delay_between_projects_m
     _ensure_bid_imports()
 
     output_root = output_root or _bids_output_root
-    notice_limit = total_pages or 43  # reutiliza el flag --pages como límite de avisos nuevos
+    total_pages = total_pages or 43
 
     print("╔══════════════════════════════════════════════╗")
-    print("║   BID Procurement Notices — Inicializando    ║")
+    print("║   BID Projects Scraper — Inicializando       ║")
     print("╚══════════════════════════════════════════════╝")
     print(f"  Salida: {output_root}")
-    print(f"  Límite de avisos nuevos a procesar: {notice_limit}")
+    print(f"  Páginas de listado a recorrer: {total_pages}")
 
-    # Cargar índice persistente de proyectos (para el reporte) y de avisos ya vistos (dedup)
     index_data = load_index(output_root)
     existing_count = len(index_data["slugs"])
     if existing_count > 0:
         print(f"  📋 Índice previo: {existing_count} proyecto(s) conocido(s)")
 
-    notices_seen = _bids_load_notices_seen(output_root)
-
     start_time = time.time()
 
-    # Paso 1: Descargar el dataset de avisos de adquisiciones (data.iadb.org)
+    print("\n🔌 Lanzando Chromium real (con pantalla) para pasar Cloudflare...")
+    browser = _bids_browser_cls()
+    browser.start()
+
+    try:
+        # Paso 1: Obtener todos los proyectos del listado
+        print("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        print("PASO 1: Escaneando listados de proyectos del BID")
+        print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
+        all_projects = _bids_fetch_all_listings(browser, total_pages=total_pages)
+
+        new_projects, duplicate_count = filter_duplicates(all_projects, index_data)
+
+        print(f"\n✅ Total proyectos encontrados: {len(all_projects)}")
+        if duplicate_count > 0:
+            print(f"  🔄 Duplicados filtrados (ya conocidos): {duplicate_count}")
+        print(f"  ✨ Proyectos nuevos: {len(new_projects)}")
+
+        # Paso 2: Obtener documentos de cada proyecto nuevo
+        print("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        print("PASO 2: Descargando documentación de proyectos")
+        print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
+        results = {
+            "downloaded": [],
+            "failed": [],
+            "skipped": [],
+            "duplicates_skipped": duplicate_count,
+        }
+
+        for i, project in enumerate(new_projects):
+            print(f"\n[{i + 1}/{len(new_projects)}] {project['title']} ({project['project_number']})")
+
+            try:
+                documents = _bids_fetch_project_documents(browser, project["url"])
+
+                if not documents:
+                    print("  ⚠ Sin documentos para descargar")
+                    results["skipped"].append({
+                        "project_number": project["project_number"],
+                        "title": project["title"],
+                        "url": project["url"],
+                        "reason": "sin_documentos",
+                    })
+                    continue
+
+                docs_dir = os.path.join(output_root, project["slug"], "documentos")
+                ensure_dir(docs_dir)
+
+                for doc_meta in documents:
+                    doc_url = doc_meta["url"]
+                    try:
+                        print(f"  📥 Descargando: {doc_meta['name'] or doc_url} [{doc_meta.get('category') or 'N/A'}]")
+
+                        fallback_name = sanitize_file_name(doc_meta["name"] or doc_url) + ".pdf"
+                        doc = browser.download(doc_url, fallback_name=fallback_name)
+                        local_name = sanitize_file_name(doc["filename"])
+                        local_path = os.path.join(docs_dir, local_name)
+                        write_file(local_path, doc["buffer"])
+
+                        print(f"  ✅ {doc['filename']} → {local_path} ({format_bytes(doc['size'])})")
+                        results["downloaded"].append({
+                            "project": project["slug"],
+                            "project_number": project["project_number"],
+                            "document_name": doc["filename"],
+                            "category": doc_meta.get("category"),
+                            "date": doc_meta.get("date"),
+                            "language": doc_meta.get("language"),
+                            "local_path": local_path,
+                            "size": doc["size"],
+                            "source_url": doc_url,
+                        })
+
+                    except Exception as err:
+                        print(f"  ❌ Error descargando {doc_url}: {err}")
+                        results["failed"].append({
+                            "project": project["slug"],
+                            "document_name": doc_meta.get("name") or doc_url,
+                            "error": str(err),
+                        })
+
+            except Exception as err:
+                print(f"  ❌ Error procesando proyecto {project['title']}: {err}")
+                results["failed"].append({
+                    "project": project["slug"],
+                    "document_name": "N/A",
+                    "error": str(err),
+                })
+
+            if i < len(new_projects) - 1:
+                time.sleep(delay_between_projects_ms / 1000)
+    finally:
+        browser.close()
+
+    # Paso 3: Actualizar y guardar índice persistente
     print("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-    print("PASO 1: Descargando dataset de avisos de adquisiciones del BID")
+    print("PASO 3: Actualizando índice persistente")
     print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
-    all_notices = _bids_fetch_all_notices(output_root=output_root)
-
-    new_notices = [n for n in all_notices if n["notice_id"] not in notices_seen]
-    duplicate_count = len(all_notices) - len(new_notices)
-
-    # Priorizar los avisos más recientes cuando hay más nuevos que el límite
-    new_notices.sort(key=lambda n: n["publication_date"] or "", reverse=True)
-    new_notices = new_notices[:notice_limit]
-
-    print(f"\n✅ Total avisos en el dataset: {len(all_notices)}")
-    if duplicate_count > 0:
-        print(f"  🔄 Ya conocidos: {duplicate_count}")
-    print(f"  ✨ Avisos nuevos a procesar: {len(new_notices)}")
-
-    # Paso 2: Descargar el documento de cada aviso nuevo
-    print("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-    print("PASO 2: Descargando documentos de adquisiciones")
-    print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-
-    results = {
-        "downloaded": [],
-        "failed": [],
-        "duplicates_skipped": duplicate_count,
-    }
-
-    touched_projects = {}  # slug -> metadata (para actualizar _index.json)
-
-    for i, notice in enumerate(new_notices):
-        slug = _bids_slugify_project(notice["project_number"])
-        title = notice["project_name"] or notice["notice_title"] or notice["project_number"]
-        print(f"\n[{i + 1}/{len(new_notices)}] {title} ({notice['project_number']}) — {notice['notice_type'] or 'notice'}")
-
-        try:
-            docs_dir = os.path.join(output_root, slug, "documentos")
-            ensure_dir(docs_dir)
-
-            fallback_name = sanitize_file_name(notice["notice_title"] or notice["notice_id"]) + ".pdf"
-            doc = _bids_download_document(notice["document_url"], fallback_name=fallback_name)
-
-            local_name = f"{notice['notice_id']}_{sanitize_file_name(doc['filename'])}"
-            if not local_name.lower().endswith(".pdf") and doc["content_type"] == "application/pdf":
-                local_name += ".pdf"
-
-            local_path = os.path.join(docs_dir, local_name)
-            write_file(local_path, doc["buffer"])
-
-            print(f"  ✅ {doc['filename']} → {local_path} ({format_bytes(doc['size'])})")
-            results["downloaded"].append({
-                "project": slug,
-                "project_number": notice["project_number"],
-                "notice_id": notice["notice_id"],
-                "notice_type": notice["notice_type"],
-                "document_name": doc["filename"],
-                "local_path": local_path,
-                "size": doc["size"],
-                "source_url": notice["document_url"],
-            })
-            notices_seen[notice["notice_id"]] = {
-                "slug": slug,
-                "status": "downloaded",
-                "local_path": local_path,
-            }
-
-        except Exception as err:
-            print(f"  ❌ Error descargando aviso {notice['notice_id']}: {err}")
-            results["failed"].append({
-                "project": slug,
-                "notice_id": notice["notice_id"],
-                "document_name": notice["notice_title"] or "N/A",
-                "error": str(err),
-            })
-            notices_seen[notice["notice_id"]] = {"slug": slug, "status": "failed"}
-
-        # El primer aviso visto por proyecto es el más reciente (lista ordenada desc)
-        touched_projects.setdefault(slug, {
-            "slug": slug,
-            "title": title,
-            "url": notice["project_url"] or "",
-            "closing_date": notice["deadline"],
-            "status": notice["project_status"],
-            "country": notice["country"],
-        })
-
-        # Delay entre descargas para respetar el servidor
-        if i < len(new_notices) - 1:
-            time.sleep(delay_between_projects_ms / 1000)
-
-    # Paso 3: Actualizar y guardar índices persistentes
-    print("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-    print("PASO 3: Actualizando índices persistentes")
-    print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-
-    update_index(index_data, list(touched_projects.values()))
+    update_index(index_data, new_projects)
     save_index(index_data, output_root)
-    _bids_save_notices_seen(output_root, notices_seen)
     total_known = len(index_data["slugs"])
-    print(f"  💾 Índice actualizado: {total_known} proyecto(s) conocido(s), {len(notices_seen)} aviso(s) rastreado(s)")
+    print(f"  💾 Índice actualizado: {total_known} proyecto(s) conocido(s)")
 
     # Paso 4: Generar resumen
     elapsed = round(time.time() - start_time, 1)
@@ -444,38 +461,232 @@ def run_bid_scraper(output_root=None, total_pages=None, delay_between_projects_m
     print("RESUMEN FINAL")
     print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
     print(f"  ⏱ Tiempo total: {elapsed}s")
-    print(f"  📦 Avisos en el dataset: {len(all_notices)}")
-    print(f"  🔄 Ya conocidos: {duplicate_count}")
-    print(f"  ✨ Avisos nuevos procesados: {len(new_notices)}")
+    print(f"  📦 Proyectos escaneados: {len(all_projects)}")
+    print(f"  🔄 Duplicados filtrados: {duplicate_count}")
+    print(f"  ✨ Proyectos nuevos procesados: {len(new_projects)}")
     print(f"  ✅ Documentos descargados: {len(results['downloaded'])}")
+    print(f"  ⚠ Proyectos sin documentos: {len(results['skipped'])}")
     print(f"  ❌ Errores: {len(results['failed'])}")
     print(f"  📋 Total proyectos en índice: {total_known}")
 
-    # Guardar resumen como JSON
     summary_path = os.path.join(output_root, "_summary.json")
     write_text_file(summary_path, json.dumps({
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "source": "BID",
         "elapsed_seconds": elapsed,
-        "total_notices_in_dataset": len(all_notices),
-        "already_known": duplicate_count,
-        "new_notices_processed": len(new_notices),
+        "total_projects_scanned": len(all_projects),
+        "duplicates_filtered": duplicate_count,
+        "new_projects_processed": len(new_projects),
         "downloaded": len(results["downloaded"]),
+        "skipped": len(results["skipped"]),
         "failed": len(results["failed"]),
-        "total_projects_in_index": total_known,
+        "total_in_index": total_known,
         "downloaded_files": [
             {
                 "project": d["project"],
-                "project_number": d["project_number"],
-                "notice_id": d["notice_id"],
-                "notice_type": d.get("notice_type"),
+                "project_number": d.get("project_number", ""),
                 "document": d["document_name"],
+                "category": d.get("category"),
+                "date": d.get("date"),
+                "language": d.get("language"),
                 "local_path": d["local_path"].replace(f"{output_root}/", ""),
                 "size_bytes": d["size"],
                 "source_url": d["source_url"],
             }
             for d in results["downloaded"]
         ],
+        "skipped_projects": results["skipped"],
+        "errors": results["failed"],
+    }, ensure_ascii=False, indent=2))
+
+    print(f"\n  📄 Resumen guardado en: {summary_path}")
+
+    return results
+
+
+# =============================================================================
+# World Bank Scraper — Banco Mundial
+# =============================================================================
+
+
+def run_worldbank_scraper(output_root=None, total_pages=None, delay_between_projects_ms=2000):
+    """
+    Ejecuta el pipeline completo de descarga de proyectos del Banco Mundial.
+
+    Mismo patrón que CAF/BID (listado → documentos → índice), pero acá no
+    hace falta scraping HTML ni navegador: el Banco Mundial expone una API
+    pública, documentada y en vivo, sin protección anti-bot (ver
+    worldbank_config.py). Todo va directo por requests.
+
+    Args:
+        output_root: Directorio de salida (default: worldbank).
+        total_pages: Páginas de listado a recorrer (worldbank_config.ROWS_PER_PAGE
+                     proyectos c/u), orden más reciente primero por fecha de
+                     aprobación (default: 3).
+        delay_between_projects_ms: Delay entre proyectos en ms.
+
+    Returns:
+        dict con resultados del scraping.
+    """
+    _ensure_worldbank_imports()
+
+    output_root = output_root or _wb_output_root
+    total_pages = total_pages or 3
+
+    print("╔══════════════════════════════════════════════╗")
+    print("║   World Bank Projects Scraper — Inicializando║")
+    print("╚══════════════════════════════════════════════╝")
+    print(f"  Salida: {output_root}")
+    print(f"  Páginas de listado a recorrer: {total_pages}")
+
+    index_data = load_index(output_root)
+    existing_count = len(index_data["slugs"])
+    if existing_count > 0:
+        print(f"  📋 Índice previo: {existing_count} proyecto(s) conocido(s)")
+
+    start_time = time.time()
+
+    # Paso 1: Obtener todos los proyectos del listado
+    print("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    print("PASO 1: Escaneando listado de proyectos del Banco Mundial")
+    print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
+    all_projects = _wb_fetch_all_projects(total_pages=total_pages)
+
+    new_projects, duplicate_count = filter_duplicates(all_projects, index_data)
+
+    print(f"\n✅ Total proyectos encontrados: {len(all_projects)}")
+    if duplicate_count > 0:
+        print(f"  🔄 Duplicados filtrados (ya conocidos): {duplicate_count}")
+    print(f"  ✨ Proyectos nuevos: {len(new_projects)}")
+
+    # Paso 2: Obtener documentos de cada proyecto nuevo
+    print("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    print("PASO 2: Descargando documentación de proyectos")
+    print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
+    results = {
+        "downloaded": [],
+        "failed": [],
+        "skipped": [],
+        "duplicates_skipped": duplicate_count,
+    }
+
+    for i, project in enumerate(new_projects):
+        print(f"\n[{i + 1}/{len(new_projects)}] {project['title']} ({project['project_id']})")
+
+        try:
+            documents = _wb_fetch_project_documents(project["project_id"])
+
+            if not documents:
+                print("  ⚠ Sin documentos para descargar")
+                results["skipped"].append({
+                    "project_id": project["project_id"],
+                    "title": project["title"],
+                    "url": project["url"],
+                    "reason": "sin_documentos",
+                })
+                continue
+
+            docs_dir = os.path.join(output_root, project["slug"], "documentos")
+            ensure_dir(docs_dir)
+
+            for doc_meta in documents:
+                pdf_url = doc_meta["pdf_url"]
+                try:
+                    print(f"  📥 Descargando: {doc_meta['name']} [{doc_meta.get('doc_type') or 'N/A'}]")
+
+                    fallback_name = sanitize_file_name(doc_meta["name"]) + ".pdf"
+                    doc = _wb_download_document(pdf_url, fallback_name=fallback_name)
+                    local_name = sanitize_file_name(doc["filename"])
+                    if not local_name.lower().endswith(".pdf"):
+                        local_name += ".pdf"
+                    local_path = os.path.join(docs_dir, local_name)
+                    write_file(local_path, doc["buffer"])
+
+                    print(f"  ✅ {doc['filename']} → {local_path} ({format_bytes(doc['size'])})")
+                    results["downloaded"].append({
+                        "project": project["slug"],
+                        "project_id": project["project_id"],
+                        "document_name": doc["filename"],
+                        "doc_type": doc_meta.get("doc_type"),
+                        "date": doc_meta.get("date"),
+                        "language": doc_meta.get("language"),
+                        "local_path": local_path,
+                        "size": doc["size"],
+                        "source_url": pdf_url,
+                    })
+
+                except Exception as err:
+                    print(f"  ❌ Error descargando {pdf_url}: {err}")
+                    results["failed"].append({
+                        "project": project["slug"],
+                        "document_name": doc_meta.get("name") or pdf_url,
+                        "error": str(err),
+                    })
+
+        except Exception as err:
+            print(f"  ❌ Error procesando proyecto {project['title']}: {err}")
+            results["failed"].append({
+                "project": project["slug"],
+                "document_name": "N/A",
+                "error": str(err),
+            })
+
+        if i < len(new_projects) - 1:
+            time.sleep(delay_between_projects_ms / 1000)
+
+    # Paso 3: Actualizar y guardar índice persistente
+    print("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    print("PASO 3: Actualizando índice persistente")
+    print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
+    update_index(index_data, new_projects)
+    save_index(index_data, output_root)
+    total_known = len(index_data["slugs"])
+    print(f"  💾 Índice actualizado: {total_known} proyecto(s) conocido(s)")
+
+    # Paso 4: Generar resumen
+    elapsed = round(time.time() - start_time, 1)
+    print("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    print("RESUMEN FINAL")
+    print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    print(f"  ⏱ Tiempo total: {elapsed}s")
+    print(f"  📦 Proyectos escaneados: {len(all_projects)}")
+    print(f"  🔄 Duplicados filtrados: {duplicate_count}")
+    print(f"  ✨ Proyectos nuevos procesados: {len(new_projects)}")
+    print(f"  ✅ Documentos descargados: {len(results['downloaded'])}")
+    print(f"  ⚠ Proyectos sin documentos: {len(results['skipped'])}")
+    print(f"  ❌ Errores: {len(results['failed'])}")
+    print(f"  📋 Total proyectos en índice: {total_known}")
+
+    summary_path = os.path.join(output_root, "_summary.json")
+    write_text_file(summary_path, json.dumps({
+        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "source": "World Bank",
+        "elapsed_seconds": elapsed,
+        "total_projects_scanned": len(all_projects),
+        "duplicates_filtered": duplicate_count,
+        "new_projects_processed": len(new_projects),
+        "downloaded": len(results["downloaded"]),
+        "skipped": len(results["skipped"]),
+        "failed": len(results["failed"]),
+        "total_in_index": total_known,
+        "downloaded_files": [
+            {
+                "project": d["project"],
+                "project_id": d.get("project_id", ""),
+                "document": d["document_name"],
+                "doc_type": d.get("doc_type"),
+                "date": d.get("date"),
+                "language": d.get("language"),
+                "local_path": d["local_path"].replace(f"{output_root}/", ""),
+                "size_bytes": d["size"],
+                "source_url": d["source_url"],
+            }
+            for d in results["downloaded"]
+        ],
+        "skipped_projects": results["skipped"],
         "errors": results["failed"],
     }, ensure_ascii=False, indent=2))
 

@@ -4,27 +4,29 @@ Entry point del scraper de convocatorias y proyectos multilaterales.
 
 Soporta múltiples fuentes:
   - CAF: Convocatorias de la Corporación Andina de Fomento (scraping HTML)
-  - BID: Avisos de adquisiciones del Banco Interamericano de Desarrollo
-         (dataset abierto en data.iadb.org — www.iadb.org está bloqueado
-         por Cloudflare, ver src/bids_config.py)
+  - BID: Proyectos del Banco Interamericano de Desarrollo (scraping HTML vía
+         un Chromium real, necesario para pasar Cloudflare — ver
+         src/bids_config.py y src/bids_browser.py)
+  - World Bank: Proyectos del Banco Mundial (API pública en vivo, sin
+         scraping HTML ni navegador — ver src/worldbank_config.py)
 
 Uso:
     python src/main.py                          # Scraping completo (CAF)
     python src/main.py --source bids            # Scraping BID
-    python src/main.py --source bids --pages 10 # Solo los 10 avisos BID más nuevos
+    python src/main.py --source worldbank       # Scraping World Bank
+    python src/main.py --source bids --pages 5  # Solo las 5 páginas BID más nuevas (~50 proyectos)
     python src/main.py -o ./caf-dl              # Directorio de salida personalizado
     python src/main.py --report                 # Generar reportes HTML + Excel desde índice existente
 
-Estructura de salida:
-  nachus/ (CAF)                               bids/ (BID)
-  ├── proyecto-slug-a/                        ├── me-t1569/
-  │   └── documentos/                         │   └── documentos/
-  │       ├── documento1.pdf                  │       ├── {noticeid}_....pdf
-  │       └── documento2.pdf                  │       └── {noticeid}_....pdf
-  ├── _index.json                             ├── _index.json
-  ├── _summary.json                           ├── _summary.json / _notices_seen.json
-  ├── _report.html                            ├── _report.html
-  └── _report.xlsx                            └── _report.xlsx
+Estructura de salida (misma para las tres fuentes):
+  nachus/ (CAF)          bids/ (BID)          worldbank/ (World Bank)
+  ├── proyecto-slug-a/    ├── me-t1569/        ├── p181166/
+  │   └── documentos/     │   └── documentos/  │   └── documentos/
+  │       └── ....pdf     │       └── ....pdf  │       └── ....pdf
+  ├── _index.json         ├── _index.json      ├── _index.json
+  ├── _summary.json       ├── _summary.json    ├── _summary.json
+  ├── _report.html        ├── _report.html     ├── _report.html
+  └── _report.xlsx        └── _report.xlsx     └── _report.xlsx
 """
 
 import sys
@@ -46,6 +48,7 @@ def main():
 Ejemplos:
   python src/main.py                          # Scraping completo (CAF)
   python src/main.py --source bids            # Scraping BID
+  python src/main.py --source worldbank       # Scraping World Bank
   python src/main.py --source bids --pages 10 # Primeras 10 páginas BID
   python src/main.py -o ./mi-caja             # Guardar en ./mi-caja
   python src/main.py --report                 # Generar reportes desde índice existente
@@ -55,21 +58,21 @@ Ejemplos:
 
     parser.add_argument(
         "--source", "-s",
-        choices=["caf", "bids"],
+        choices=["caf", "bids", "worldbank"],
         default="caf",
-        help="Fuente a scrapear: 'caf' (CAF convocatorias) o 'bids' (BID proyectos). Default: caf",
+        help="Fuente a scrapear: 'caf', 'bids' (BID) o 'worldbank' (Banco Mundial). Default: caf",
     )
     parser.add_argument(
         "-p", "--pages",
         type=int,
         default=43,
-        help="CAF: número de páginas de listado. BID: límite de avisos nuevos a procesar (default: 43)",
+        help="Número de páginas de listado a procesar, orden más reciente primero (default: 43)",
     )
     parser.add_argument(
         "-o", "--output",
         type=str,
         default=None,
-        help="Directorio de salida para scraping (default: config.py OUTPUT_ROOT para CAF, bids_config.py para BID)",
+        help="Directorio de salida (default: OUTPUT_ROOT del config.py de la fuente elegida)",
     )
     parser.add_argument(
         "-d", "--delay",
@@ -134,6 +137,14 @@ Ejemplos:
             from orchestrator import run_bid_scraper
 
             results = run_bid_scraper(
+                output_root=args.output,
+                total_pages=args.pages,
+                delay_between_projects_ms=args.delay,
+            )
+        elif args.source == "worldbank":
+            from orchestrator import run_worldbank_scraper
+
+            results = run_worldbank_scraper(
                 output_root=args.output,
                 total_pages=args.pages,
                 delay_between_projects_ms=args.delay,

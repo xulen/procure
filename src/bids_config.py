@@ -1,24 +1,35 @@
 """
 Configuración del scraper de proyectos del Banco Interamericano de Desarrollo (BID / IDB).
 
-IMPORTANTE — por qué esto NO scrapea www.iadb.org/en/project-search:
-Ese dominio está protegido por Cloudflare Bot Fight Mode. Se verificó que
-incluso una navegación real con Playwright (Chromium headless, cookies de
-warmup válidas, sin señales obvias de automatización) recibe un bloqueo
-duro ("Attention Required! | Cloudflare") en cualquier página salvo la home.
-No es un simple challenge de cookies como el de CAF (Incapsula): es un
-bloqueo de comportamiento que persiste incluso resolviendo el warmup.
+IMPORTANTE — por qué esto no scrapea www.iadb.org con requests ni con
+Playwright.launch() normal:
+Ese dominio está protegido por Cloudflare Bot Fight Mode. Se verificó en
+vivo que:
+  - requests / Playwright headless (con o sin cookies de warmup): 403
+    duro ("Attention Required! | Cloudflare") en cualquier página salvo
+    la home. No es un challenge de cookies como el de CAF (Incapsula).
+  - Playwright headless "puro" (sin launch(), lanzado a mano vía
+    connect_over_cdp): también 403. Es el modo headless en sí lo que
+    Cloudflare detecta, no las banderas de automatización.
+  - Chromium con pantalla real (headed), lanzado como proceso normal
+    (SIN --enable-automation ni el resto de banderas de Playwright.launch())
+    y recién después controlado vía connect_over_cdp: pasa sin problema.
 
-En cambio, el BID publica sus avisos de adquisiciones (procurement notices)
-como dato abierto en data.iadb.org (portal CKAN, sin protección anti-bot),
-con un enlace directo a cada documento en idbdocs.iadb.org que redirige a
-un bucket S3 público. Ese es el camino que usan bids_notices.py y
-bids_documents.py — no requiere Playwright ni cookies de sesión.
+Por eso bids_browser.py lanza Chromium a mano (headed) — requiere una
+pantalla real (WSLg en WSL2, DISPLAY=:0). Ver bids_listings.py /
+bids_projects.py para el scraping en sí.
+
+Alternativa histórica (sin Chromium): el BID también publica sus avisos de
+adquisiciones como dato abierto en data.iadb.org (CKAN) vía bids_notices.py
++ bids_index.py, pero ese dataset tiene un rezago de varios meses — no sirve
+para trackear avisos nuevos, solo como backfill histórico masivo.
 """
 
+BASE_URL = "https://www.iadb.org"
+LISTINGS_PATH = "/en/project-search"
 OUTPUT_ROOT = "bids"
 
-# Portal de datos abiertos del BID (CKAN)
+# Portal de datos abiertos del BID (CKAN) — ver nota arriba, uso histórico
 CKAN_API_BASE = "https://data.iadb.org/api/3/action"
 NOTICES_DATASET_ID = "project-procurement-bidding-notices-and-notification-of-contract-awards"
 

@@ -9,24 +9,26 @@ Soporta múltiples fuentes:
          src/bids_config.py y src/bids_browser.py)
   - World Bank: Proyectos del Banco Mundial (API pública en vivo, sin
          scraping HTML ni navegador — ver src/worldbank_config.py)
+  - all:  Las tres fuentes en una sola corrida (usa directorios por defecto)
 
 Uso:
     python src/main.py                          # Scraping completo (CAF)
     python src/main.py --source bids            # Scraping BID
     python src/main.py --source worldbank       # Scraping World Bank
+    python src/main.py --source all             # Las tres fuentes en secuencia
     python src/main.py --source bids --pages 5  # Solo las 5 páginas BID más nuevas (~50 proyectos)
     python src/main.py -o ./caf-dl              # Directorio de salida personalizado
     python src/main.py --report                 # Generar reportes HTML + Excel desde índice existente
 
 Estructura de salida (misma para las tres fuentes):
-  nachus/ (CAF)          bids/ (BID)          worldbank/ (World Bank)
-  ├── proyecto-slug-a/    ├── me-t1569/        ├── p181166/
-  │   └── documentos/     │   └── documentos/  │   └── documentos/
-  │       └── ....pdf     │       └── ....pdf  │       └── ....pdf
-  ├── _index.json         ├── _index.json      ├── _index.json
-  ├── _summary.json       ├── _summary.json    ├── _summary.json
-  ├── _report.html        ├── _report.html     ├── _report.html
-  └── _report.xlsx        └── _report.xlsx     └── _report.xlsx
+  caf/ (CAF)             bids/ (BID)          worldbank/ (World Bank)
+  ├── proyecto-slug-a/   ├── me-t1569/        ├── p181166/
+  │   └── documentos/    │   └── documentos/  │   └── documentos/
+  │       └── ....pdf    │       └── ....pdf  │       └── ....pdf
+  ├── _index.json        ├── _index.json      ├── _index.json
+  ├── _summary.json      ├── _summary.json    ├── _summary.json
+  ├── _report.html       ├── _report.html     ├── _report.html
+  └── _report.xlsx       └── _report.xlsx     └── _report.xlsx
 """
 
 import sys
@@ -49,6 +51,7 @@ Ejemplos:
   python src/main.py                          # Scraping completo (CAF)
   python src/main.py --source bids            # Scraping BID
   python src/main.py --source worldbank       # Scraping World Bank
+  python src/main.py --source all             # Las tres fuentes en secuencia
   python src/main.py --source bids --pages 10 # Primeras 10 páginas BID
   python src/main.py -o ./mi-caja             # Guardar en ./mi-caja
   python src/main.py --report                 # Generar reportes desde índice existente
@@ -58,9 +61,9 @@ Ejemplos:
 
     parser.add_argument(
         "--source", "-s",
-        choices=["caf", "bids", "worldbank"],
+        choices=["caf", "bids", "worldbank", "all"],
         default="caf",
-        help="Fuente a scrapear: 'caf', 'bids' (BID) o 'worldbank' (Banco Mundial). Default: caf",
+        help="Fuente a scrapear: 'caf', 'bids' (BID), 'worldbank' (Banco Mundial) o 'all' (las tres). Default: caf",
     )
     parser.add_argument(
         "-p", "--pages",
@@ -133,7 +136,70 @@ Ejemplos:
 
     try:
         # Seleccionar scraper según fuente
-        if args.source == "bids":
+        if args.source == "all":
+            # Correr las tres fuentes en secuencia
+            from orchestrator import run_scraper, run_bid_scraper, run_worldbank_scraper
+
+            all_results = {}
+            all_failed = []
+
+            # --- CAF ---
+            if args.output:
+                print("\n⚠️  Con --source all se ignora -o y cada fuente usa su directorio por defecto.\n")
+            results = run_scraper(
+                output_root=None,
+                total_pages=args.pages,
+                delay_between_projects_ms=args.delay,
+            )
+            all_results["CAF"] = results
+            if results["failed"]:
+                for err in results["failed"]:
+                    all_failed.append({"source": "CAF", **err})
+
+            # --- BID ---
+            results = run_bid_scraper(
+                output_root=None,
+                total_pages=args.pages,
+                delay_between_projects_ms=args.delay,
+            )
+            all_results["BID"] = results
+            if results["failed"]:
+                for err in results["failed"]:
+                    all_failed.append({"source": "BID", **err})
+
+            # --- World Bank ---
+            results = run_worldbank_scraper(
+                output_root=None,
+                total_pages=args.pages,
+                delay_between_projects_ms=args.delay,
+            )
+            all_results["World Bank"] = results
+            if results["failed"]:
+                for err in results["failed"]:
+                    all_failed.append({"source": "World Bank", **err})
+
+            # Resumen combinado
+            print("\n" + "=" * 60)
+            print("  RESUMEN COMBINADO — LAS TRES FUENTES")
+            print("=" * 60)
+            for name, res in all_results.items():
+                total = len(res.get("downloaded", []))
+                failed = len(res.get("failed", []))
+                skipped = len(res.get("skipped", []))
+                dupes = res.get("duplicates_skipped", 0)
+                print(f"  {name}: {total} descargados | {skipped} omitidos | {dupes} duplicados | {failed} errores")
+            print()
+            if all_failed:
+                print(f"⚠️  {len(all_failed)} error(es) en total:")
+                for err in all_failed[:10]:
+                    print(f"  [{err['source']}] {err.get('project', 'unknown')}: {err.get('error', 'unknown')}")
+                if len(all_failed) > 10:
+                    print(f"  ... y {len(all_failed) - 10} más")
+            else:
+                print("✅ Scraping de las tres fuentes completado exitosamente.")
+            sys.exit(0)
+
+        elif args.source == "bids":
             from orchestrator import run_bid_scraper
 
             results = run_bid_scraper(

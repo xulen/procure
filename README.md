@@ -71,6 +71,7 @@ qué hace falta esto en primer lugar.
 python src/main.py                          # Scraping CAF (default)
 python src/main.py --source bids            # Scraping BID (43 páginas de listado, ~430 proyectos)
 python src/main.py --source bids --pages 5  # Solo las 5 páginas BID más nuevas (~50 proyectos)
+python src/main.py --source all             # Las tres fuentes en una sola corrida
 python src/main.py -o ./mi-caja             # Guardar en ./mi-caja
 python src/main.py --verbose                # Logging detallado
 ```
@@ -79,9 +80,9 @@ python src/main.py --verbose                # Logging detallado
 
 | Flag | Descripción | Default |
 |------|-------------|---------|
-| `-s <fuente>` / `--source <fuente>` | Fuente: `caf` o `bids` | `caf` |
-| `-p <n>` / `--pages <n>` | Páginas de listado a recorrer (10 proyectos/página en BID), orden más reciente primero | 43 |
-| `-o <ruta>` / `--output <ruta>` | Directorio de salida para scraping | `./caf` / `./bids` |
+| `-s <fuente>` / `--source <fuente>` | Fuente: `caf`, `bids` (BID), `worldbank` (Banco Mundial) o `all` (las tres en secuencia) | `caf` |
+| `-p <n>` / `--pages <n>` | Páginas de listado a recorrer (10 proyectos/página en BID, 20 en World Bank), orden más reciente primero | 43 |
+| `-o <ruta>` / `--output <ruta>` | Directorio de salida para scraping | `./caf` / `./bids` / `./worldbank` |
 | `-d <ms>` / `--delay <ms>` | Delay entre proyectos en ms | 2000 |
 | `-v` / `--verbose` | Activar logging detallado | false |
 
@@ -165,6 +166,35 @@ python src/main.py --source bids --pages 3
 python src/main.py --source bids -o ./proyectos-bid --pages 100
 ```
 
+### Levantar las tres fuentes en una sola corrida
+
+`--source all` ejecuta CAF, BID y World Bank en secuencia, cada uno en su
+directorio por defecto (`caf/`, `bids/`, `worldbank/`). Al finalizar imprime
+un resumen combinado con descargados, omitidos, duplicados y errores por
+fuente.
+
+```bash
+# Las tres fuentes con 43 páginas por defecto
+python src/main.py --source all
+
+# Acotar páginas por fuente (ej. 5 páginas = ~50 BID, ~100 WB, 43 CAF)
+python src/main.py --source all -p 5
+
+# Con delay personalizado
+python src/main.py --source all -d 3000
+```
+
+> **Nota:** cuando se usa `--source all` se ignora `-o` (cada fuente usa su
+> directorio por defecto). Si necesitás un directorio personalizado para
+> alguna fuente, ejecutá los scrapers por separado.
+
+Después de levantar las tres fuentes, generá el reporte combinado:
+
+```bash
+# Reporte que incluye CAF, BID y World Bank en un solo HTML + Excel
+python src/main.py --report -o ./resumen
+```
+
 ### Reportes (HTML + Excel)
 
 Después de ejecutar el scraper, genera reportes amigables para usuarios finales:
@@ -185,21 +215,22 @@ python src/report.py --project-root .       # Detecta todas las fuentes automát
 ### Estructura de descarga
 
 ```
-nachus/ (CAF)                              bids/ (BID)
-├── proyecto-slug-a/                       ├── me-t1569/
-│   └── documentos/                        │   └── documentos/
-│       ├── documento1.pdf                 │       ├── TC_Abstract.pdf
-│       └── documento2.pdf                 │       └── Terms_of_Reference.pdf
-├── _index.json                            ├── _index.json
-├── _summary.json                          ├── _summary.json
-├── _report.html                           ├── _report.html
-└── _report.xlsx                           └── _report.xlsx
+caf/ (CAF)                               bids/ (BID)              worldbank/ (World Bank)
+├── proyecto-slug-a/                     ├── me-t1569/            ├── p181166/
+│   └── documentos/                      │   └── documentos/      │   └── documentos/
+│       ├── documento1.pdf               │       ├── TC_Abstract.pdf │       ├── P181166_Procurement.pdf
+│       └── documento2.pdf               │       └── Terms_of_Reference.pdf │       └── ISR.pdf
+├── _index.json                          ├── _index.json          ├── _index.json
+├── _summary.json                        ├── _summary.json        ├── _summary.json
+├── _report.html                         ├── _report.html         ├── _report.html
+└── _report.xlsx                         └── _report.xlsx         └── _report.xlsx
 ```
 
-Dedup por proyecto (igual que CAF): una vez que un `project_number` entra al
-`_index.json`, corridas futuras no lo vuelven a visitar — si más adelante se
-suben avisos/documentos nuevos a ese mismo proyecto, no se detectan
-automáticamente.
+Cada fuente se descarga en su propia carpeta (`caf/`, `bids/`, `worldbank/`).
+El dedup por proyecto se maneja con `_index.json` en cada carpeta: una vez
+que un proyecto entra al índice, las corridas futuras no lo vuelven a
+visitar — si más adelante se suben avisos/documentos nuevos a ese mismo
+proyecto, no se detectan automáticamente.
 
 ## Arquitectura
 
@@ -366,15 +397,20 @@ Archivo con una hoja por fuente:
 ### Flujo de trabajo recomendado
 
 ```bash
-# 1. Ejecutar scraping (genera _index.json y descarga documentos)
-python src/main.py -o nachus
+# Opción A: una sola corrida para las tres fuentes
+python src/main.py --source all
 
-# 2. Generar reportes amigables
-python src/main.py --report -o nachus
+# Opción B: fuentes individuales (útil para acotar páginas por fuente)
+python src/main.py -s caf -p 43 -o caf
+python src/main.py -s bids -p 43 -o bids
+python src/main.py -s worldbank -p 3 -o worldbank
 
-# 3. Abrir reporte HTML en navegador
-xdg-open nachus/_report.html   # Linux
-open nachus/_report.html       # macOS
+# Generar reportes amigables (detecta todas las fuentes bajo el root)
+python src/main.py --report -o ./resumen
+
+# Abrir reporte HTML en navegador
+xdg-open resumen/_report.html   # Linux
+open resumen/_report.html       # macOS
 ```
 
 ## Consideraciones
@@ -385,4 +421,4 @@ open nachus/_report.html       # macOS
 - **BID usa un Chromium real, no headless**: `www.iadb.org` bloquea el modo headless (con o sin banderas de automatización), así que `bids_browser.py` lanza Chromium a mano (headed, sin banderas de Playwright.launch()) y se conecta vía `connect_over_cdp` — corre sobre un Xvfb propio por default, sin ventana visible (ver sección "BID — por qué no es scraping headless")
 - **World Bank no necesita nada especial**: API pública sin protección anti-bot, todo por `requests` (ver sección "World Bank — API pública, sin scraping")
 - **Reportes amigables**: `_report.html` y `_report.xlsx` para consulta sin conocimientos técnicos
-- **Múltiples fuentes**: Soporta escanear y reportar sobre múltiples fuentes (CAF, BID, World Bank) simultáneamente
+- **Múltiples fuentes**: Soporta escanear y reportar sobre múltiples fuentes (CAF, BID, World Bank) simultáneamente. Usá `--source all` para correr las tres en secuencia, o ejecutá cada fuente por separado para acotar páginas por fuente. Los reportes detectan automáticamente todas las carpetas con `_index.json` bajo el directorio raíz.

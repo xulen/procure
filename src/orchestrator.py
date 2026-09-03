@@ -46,6 +46,7 @@ def _ensure_worldbank_imports():
     global _wb_imports_ready
     if not _wb_imports_ready:
         from worldbank_config import OUTPUT_ROOT as WB_OUTPUT_ROOT
+        from worldbank_config import STATUS_FILTER as WB_STATUS_FILTER
         from worldbank_projects import fetch_all_projects as wb_fetch_all_projects
         from worldbank_documents import (
             fetch_project_documents as wb_fetch_project_documents,
@@ -54,6 +55,7 @@ def _ensure_worldbank_imports():
 
         globals().update({
             "_wb_output_root": WB_OUTPUT_ROOT,
+            "_wb_status_filter": WB_STATUS_FILTER,
             "_wb_fetch_all_projects": wb_fetch_all_projects,
             "_wb_fetch_project_documents": wb_fetch_project_documents,
             "_wb_download_document": wb_download_document,
@@ -72,6 +74,8 @@ def run_scraper(output_root=None, total_pages=None, delay_between_projects_ms=20
         total_pages: Número de páginas a procesar (default: TOTAL_PAGES o
                      el valor detectado automáticamente del HTML).
         delay_between_projects_ms: Delay entre proyectos en ms.
+        status_filter: Filtro de estado (default: "Active^Pipeline").
+                      Valores separados por ^ (OR): Active, Pipeline, Closed, etc.
 
     Returns:
         dict con resultados del scraping.
@@ -328,6 +332,8 @@ def run_bid_scraper(output_root=None, total_pages=None, delay_between_projects_m
         total_pages: Páginas de listado a recorrer, 10 proyectos c/u, orden
                      más reciente primero (default: 43).
         delay_between_projects_ms: Delay entre proyectos en ms.
+        status_filter: Filtro de estado (default: "Active^Pipeline").
+                      Valores separados por ^ (OR): Active, Pipeline, Closed, etc.
 
     Returns:
         dict con resultados del scraping.
@@ -509,7 +515,7 @@ def run_bid_scraper(output_root=None, total_pages=None, delay_between_projects_m
 # =============================================================================
 
 
-def run_worldbank_scraper(output_root=None, total_pages=None, delay_between_projects_ms=2000):
+def run_worldbank_scraper(output_root=None, total_pages=None, delay_between_projects_ms=2000, status_filter=None):
     """
     Ejecuta el pipeline completo de descarga de proyectos del Banco Mundial.
 
@@ -524,6 +530,8 @@ def run_worldbank_scraper(output_root=None, total_pages=None, delay_between_proj
                      proyectos c/u), orden más reciente primero por fecha de
                      aprobación (default: 3).
         delay_between_projects_ms: Delay entre proyectos en ms.
+        status_filter: Filtro de estado (default: "Active^Pipeline").
+                      Valores separados por ^ (OR): Active, Pipeline, Closed, etc.
 
     Returns:
         dict con resultados del scraping.
@@ -532,6 +540,7 @@ def run_worldbank_scraper(output_root=None, total_pages=None, delay_between_proj
 
     output_root = output_root or _wb_output_root
     total_pages = total_pages or 3
+    status = status_filter or _wb_status_filter
 
     print("╔══════════════════════════════════════════════╗")
     print("║   World Bank Projects Scraper — Inicializando║")
@@ -551,7 +560,7 @@ def run_worldbank_scraper(output_root=None, total_pages=None, delay_between_proj
     print("PASO 1: Escaneando listado de proyectos del Banco Mundial")
     print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
-    all_projects = _wb_fetch_all_projects(total_pages=total_pages)
+    all_projects = _wb_fetch_all_projects(total_pages=total_pages, status=status)
 
     new_projects, duplicate_count = filter_duplicates(all_projects, index_data)
 

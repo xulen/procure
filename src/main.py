@@ -15,6 +15,8 @@ Uso:
     python src/main.py                          # Scraping completo (CAF)
     python src/main.py --source bids            # Scraping BID
     python src/main.py --source worldbank       # Scraping World Bank
+  python src/main.py --source worldbank --status Active^Closed  # Active o Closed
+    python src/main.py --source worldbank --status Active^Closed  # Solo Active o Closed
     python src/main.py --source all             # Las tres fuentes en secuencia
     python src/main.py --source bids --pages 5  # Solo las 5 páginas BID más nuevas (~50 proyectos)
     python src/main.py -o ./caf-dl              # Directorio de salida personalizado
@@ -51,6 +53,7 @@ Ejemplos:
   python src/main.py                          # Scraping completo (CAF)
   python src/main.py --source bids            # Scraping BID
   python src/main.py --source worldbank       # Scraping World Bank
+  python src/main.py --source worldbank --status Active^Closed  # Active o Closed
   python src/main.py --source all             # Las tres fuentes en secuencia
   python src/main.py --source bids --pages 10 # Primeras 10 páginas BID
   python src/main.py -o ./mi-caja             # Guardar en ./mi-caja
@@ -87,6 +90,12 @@ Ejemplos:
         "-v", "--verbose",
         action="store_true",
         help="Activar logging detallado",
+    )
+    parser.add_argument(
+        "--status",
+        type=str,
+        default=None,
+        help="Filtro de estado para World Bank (ej: Active^Pipeline, Active^Closed). Valores separados por ^ (OR). Default: Active^Pipeline (config)",
     )
 
     # Modo reporte (sin scraping)
@@ -172,6 +181,7 @@ Ejemplos:
                 output_root=None,
                 total_pages=args.pages,
                 delay_between_projects_ms=args.delay,
+                status_filter=args.status,
             )
             all_results["World Bank"] = results
             if results["failed"]:
@@ -214,6 +224,7 @@ Ejemplos:
                 output_root=args.output,
                 total_pages=args.pages,
                 delay_between_projects_ms=args.delay,
+                status_filter=args.status,
             )
         else:
             # CAF (default)

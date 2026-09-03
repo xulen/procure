@@ -22,6 +22,12 @@ DOCS_API = "https://search.worldbank.org/api/v3/wds"
 # de projects.worldbank.org)
 REGION_FILTER = "Latin America and Caribbean"
 
+# Filtro de estado: valores separados por ^ (OR).
+# Opciones válidas: Active, Pipeline, Closed, Effective, Economic Evaluation,
+# Appraisal, Signed, Board Approval, Board Presentation, Board Approved
+# Ejemplo: "Active^Pipeline" = Active O Pipeline
+STATUS_FILTER = "Active^Pipeline"
+
 ROWS_PER_PAGE = 20
 
 HTTP_CONFIG = {

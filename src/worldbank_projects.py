@@ -5,7 +5,7 @@ pública de proyectos (ver worldbank_config.py).
 
 import requests
 
-from worldbank_config import PROJECTS_API, REGION_FILTER, HEADERS, HTTP_CONFIG, ROWS_PER_PAGE
+from worldbank_config import PROJECTS_API, REGION_FILTER, STATUS_FILTER, HEADERS, HTTP_CONFIG, ROWS_PER_PAGE
 
 _session = None
 
@@ -56,7 +56,7 @@ def parse_projects_page(payload):
     return projects
 
 
-def fetch_all_projects(total_pages=None, rows_per_page=None, region=None):
+def fetch_all_projects(total_pages=None, rows_per_page=None, region=None, status=None):
     """
     Recorre páginas de la API de proyectos del Banco Mundial, orden más
     reciente primero (por fecha de aprobación).
@@ -65,6 +65,8 @@ def fetch_all_projects(total_pages=None, rows_per_page=None, region=None):
         total_pages: cuántas páginas recorrer (default: 3).
         rows_per_page: proyectos por página (default: ROWS_PER_PAGE).
         region: filtro de región exacto (default: REGION_FILTER, LAC).
+        status: filtro de estado (default: STATUS_FILTER, "Active^Pipeline").
+                Valores separados por ^ (OR): Active, Pipeline, Closed, etc.
 
     Returns:
         Lista de dicts de proyecto (puede tener duplicados entre corridas,
@@ -73,6 +75,7 @@ def fetch_all_projects(total_pages=None, rows_per_page=None, region=None):
     total_pages = total_pages or 3
     rows_per_page = rows_per_page or ROWS_PER_PAGE
     region = region or REGION_FILTER
+    status = status or STATUS_FILTER
 
     all_projects = []
 
@@ -85,6 +88,7 @@ def fetch_all_projects(total_pages=None, rows_per_page=None, region=None):
             params={
                 "format": "json",
                 "regionname_exact": region,
+                "status_exact": status,
                 "rows": rows_per_page,
                 "os": offset,
                 "srt": "boardapprovaldate",
